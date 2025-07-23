@@ -9,13 +9,14 @@ import time
 from mss import mss
 import sys
 from pynput.mouse import Button, Controller as MouseController
-from pynput.keyboard import Key, Controller as KeyboardController, Listener as KeyboardListener  # 新增全局键盘监听器
+from pynput.keyboard import Key, Controller as KeyboardController, Listener as KeyboardListener
 import os
 import json
 from pathlib import Path
+import ctypes
 
 def resource_path(relative_path):
-    """ 获取资源文件的绝对路径。在开发时和打包后均可使用 """
+    """获取资源文件的绝对路径。在开发时和打包后均可使用"""
     try:
         # 如果存在_MEIPASS属性，说明程序是打包后运行
         base_path = Path(sys._MEIPASS)
@@ -24,16 +25,11 @@ def resource_path(relative_path):
 
     return str(base_path / relative_path)
 
+
 # ====== 默认阈值配置 ======
 DEFAULT_THRESHOLD1 = 200000
 DEFAULT_THRESHOLD2 = 320000
 
-# ====== 分辨率配置映射 ======
-RESOLUTION_MAP = {
-    "1080p": {"width": 1920, "height": 1080},
-    "2K": {"width": 2560, "height": 1440},
-    "4K": {"width": 3840, "height": 2160}
-}
 # ====== Tesseract配置 ======
 TESSERACT_PATH = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
@@ -43,67 +39,228 @@ CONFIG_FILE = "ocr_config.json"
 
 
 def load_config():
-    """加载配置文件，返回阈值设置"""
+    """加载配置文件，返回阈值设置和区域配置"""
+    config = {
+        'threshold1': DEFAULT_THRESHOLD1,
+        'threshold2': DEFAULT_THRESHOLD2,
+        'monitor_region': None,
+        'click_region': None
+    }
+
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-                if 'threshold1' in config and 'threshold2' in config:
-                    return config['threshold1'], config['threshold2']
+                loaded_config = json.load(f)
+                # 合并配置
+                for key in loaded_config:
+                    if key in config:
+                        config[key] = loaded_config[key]
         except:
             pass
-    return DEFAULT_THRESHOLD1, DEFAULT_THRESHOLD2
+
+    return config
 
 
-def save_config(threshold1, threshold2):
+def save_config(config):
     """保存配置文件"""
-    config = {
-        'threshold1': threshold1,
-        'threshold2': threshold2
-    }
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f)
 
 
-class ResolutionSelector:
+class RegionSelector:
+    """区域选择器（全屏透明覆盖层）"""
+
+    def __init__(self, parent, title="请框选区域"):
+        self.top = tk.Toplevel(parent)
+        self.top.title(title)
+        self.top.attributes('-fullscreen', True)  # 全屏
+        self.top.attributes('-alpha', 0.2)  # 半透明
+        self.top.attributes('-topmost', True)  # 置顶
+        self.scaling_factor = self._get_windows_scaling()
+
+        # 创建画布覆盖整个屏幕
+        self.canvas = tk.Canvas(self.top,
+                                bg='black',
+                                highlightthickness=0,
+                                cursor="cross")
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+
+        # 绑定事件
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.top.bind("<Escape>", self.cancel)
+        self.top.bind("<Destroy>", self.on_window_close)
+
+        # 初始化变量
+        self.start_x = None
+        self.start_y = None
+        self.current_rect = None
+        self.region = None
+        self.closed_by_user = False
+        self.persistent_rects = []  # 存储持久化矩形对象
+
+        # 提示文本
+        self.tip_label = self.canvas.create_text(
+            self.top.winfo_screenwidth() // 2,
+            50,
+            text="按住鼠标左键框选区域，释放后确认（ESC取消）",
+            font=("微软雅黑", 14, "bold"),
+            fill="white"
+        )
+
+        # 设置为模态窗口并等待
+        self.top.grab_set()
+        self.top.wait_window()
+
+    def _get_windows_scaling(self):
+        """获取Windows系统DPI缩放比例[6,7](@ref)"""
+        try:
+            # 获取缩放因子（125%缩放返回1.25）
+            scale_factor = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100.0
+            return scale_factor
+        except:
+            return 1.0  # 默认无缩放
+    def on_press(self, event):
+        """鼠标按下事件"""
+        self.start_x = event.x
+        self.start_y = event.y
+
+        # 创建新矩形
+        self.current_rect = self.canvas.create_rectangle(
+            self.start_x, self.start_y,
+            self.start_x, self.start_y,
+            outline="red",
+            width=2,
+            dash=(4, 4)
+        )
+
+    def on_drag(self, event):
+        """鼠标拖动事件"""
+        if self.current_rect:
+            # 更新矩形尺寸
+            self.canvas.coords(
+                self.current_rect,
+                self.start_x, self.start_y,
+                event.x, event.y
+            )
+
+    def on_release(self, event):
+        """鼠标释放事件"""
+        end_x = event.x
+        end_y = event.y
+
+        # 确保坐标有效（左上->右下）
+        x1 = min(self.start_x, end_x)
+        y1 = min(self.start_y, end_y)
+        x2 = max(self.start_x, end_x)
+        y2 = max(self.start_y, end_y)
+
+        # 保存区域坐标
+        self.region = (int(x1 * self.scaling_factor), int(y1* self.scaling_factor),  int((x2 - x1)* self.scaling_factor),  int((y2 - y1)* self.scaling_factor))
+
+        # 删除临时虚线框
+        if self.current_rect:
+            self.canvas.delete(self.current_rect)
+
+        # 创建绿色实线半透明矩形（80%透明度）
+        persistent_rect = self.canvas.create_rectangle(
+            x1, y1, x2, y2,
+            outline="#00FF00",  # 绿色边框
+            fill="",  # 透明填充
+            stipple="gray12",  # 点状纹理（半透明效果）
+            width=2  # 边框粗细
+        )
+        self.persistent_rects.append(persistent_rect)
+
+        # 添加确认视觉反馈
+        self.top.update()
+        time.sleep(0.3)
+
+        self.top.destroy()
+
+    def cancel(self, event=None):
+        """取消选择"""
+        self.region = None
+        self.closed_by_user = True
+        self.top.destroy()
+
+    def on_window_close(self, event):
+        """窗口关闭事件处理"""
+        if not self.region:
+            self.closed_by_user = True
+
+    def get_region(self):
+        """返回选择的区域（x, y, width, height）"""
+        return self.region
+
+
+class ParameterSelector:
     """分辨率选择器（带阈值设置）"""
 
     def __init__(self):
-
         self.rs = tk.Tk()
         self.rs.iconbitmap(resource_path('mouse.ico'))
-        self.rs.title("配置监控参数")
+        self.rs.title("参数配置")
         self.center_window()
         self.rs.resizable(False, False)
         self.rs.attributes('-topmost', True)  # 窗口置顶
+        self.rs.protocol("WM_DELETE_WINDOW", self.on_close)  # 处理窗口关闭事件
 
         # 加载上次配置
-        self.threshold1, self.threshold2 = load_config()
+        self.config = load_config()
+        self.threshold1 = self.config['threshold1']
+        self.threshold2 = self.config['threshold2']
+        self.monitor_region = self.config['monitor_region']
+        self.click_region = self.config['click_region']
 
         # 设置样式
         self.rs.configure(bg="#f0f0f0")
         tk.Label(self.rs,
-                 text="请配置监控参数",
+                 text="三脚粥鼠鼠交流群qq:162103846",
                  font=("微软雅黑", 12, "bold"),
                  bg="#f0f0f0").pack(pady=10)
 
-        # === 分辨率选择区域 ===
-        tk.Label(self.rs,
-                 text="选择屏幕分辨率:",
+
+        # === 区域选择区域 ===
+        region_frame = tk.Frame(self.rs, bg="#f0f0f0")
+        region_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        tk.Label(region_frame,
+                 text="监控区域设置:",
                  font=("微软雅黑", 10),
-                 bg="#f0f0f0").pack(anchor="w", padx=20, pady=(10, 5))
+                 bg="#f0f0f0").grid(row=0, column=0, sticky="w", pady=5)
 
-        # 创建分辨率选择按钮框架
-        res_frame = tk.Frame(self.rs, bg="#f0f0f0")
-        res_frame.pack(fill=tk.X, padx=20, pady=5)
+        # 监控区域按钮
+        self.monitor_btn = tk.Button(region_frame,
+                                     text="框选价格监控区域",
+                                     command=self.select_monitor_region,
+                                     font=("微软雅黑", 9))
+        self.monitor_btn.grid(row=0, column=1, padx=5)
 
-        # 创建分辨率选择按钮
-        resolutions = ["1080p", "2K", "4K"]
-        self.selected_resolution = tk.StringVar(value="2K")  # 默认选择2K
-        for res in resolutions:
-            tk.Radiobutton(res_frame, text=res, variable=self.selected_resolution,
-                           value=res, bg="#f0f0f0", font=("微软雅黑", 9),
-                           selectcolor="#e0e0e0").pack(side=tk.LEFT, padx=10)
+        # 点击区域按钮
+        self.click_btn = tk.Button(region_frame,
+                                   text="框选购买按钮区域",
+                                   command=self.select_click_region,
+                                   font=("微软雅黑", 9))
+        self.click_btn.grid(row=0, column=2, padx=5)
+
+        # 显示当前区域信息
+        self.monitor_label = tk.Label(region_frame,
+                                      text="未选择" if not self.monitor_region else
+                                      f"价格监控区: ({self.monitor_region[0]},{self.monitor_region[1]})-({self.monitor_region[2]},{self.monitor_region[3]})",
+                                      font=("微软雅黑", 8),
+                                      fg="#666",
+                                      bg="#f0f0f0")
+        self.monitor_label.grid(row=1, column=1, columnspan=2, sticky="w")
+
+        self.click_label = tk.Label(region_frame,
+                                    text="未选择" if not self.click_region else
+                                    f"购买点击点: ({self.click_region[0]}, {self.click_region[1]})",
+                                    font=("微软雅黑", 8),
+                                    fg="#666",
+                                    bg="#f0f0f0")
+        self.click_label.grid(row=2, column=1, columnspan=2, sticky="w")
 
         # === 阈值设置区域 ===
         threshold_frame = tk.Frame(self.rs, bg="#f0f0f0")
@@ -148,9 +305,9 @@ class ResolutionSelector:
                   padx=20, pady=5).pack(pady=15)
 
         # 状态变量
-        self.resolution = None
         self.threshold1_val = None
         self.threshold2_val = None
+        self.closed_by_user = False
 
         self.rs.mainloop()
 
@@ -171,11 +328,40 @@ class ResolutionSelector:
 
         # 应用新位置（保持原窗口尺寸）
         self.rs.geometry(f"+{x}+{y}")
+
+    def select_monitor_region(self):
+        """选择监控区域"""
+        selector = RegionSelector(self.rs, "请框选监控区域（价格显示区）")
+        region = selector.get_region()
+        if region:
+            self.monitor_region = region
+            self.monitor_label.config(
+                text=f"监控区: {region[0]}x{region[1]} ({region[2]}x{region[3]})"
+            )
+            # 更新配置
+            self.config['monitor_region'] = region
+            save_config(self.config)
+
+    def select_click_region(self):
+        """选择点击区域"""
+        selector = RegionSelector(self.rs, "请框选点击区域（购买按钮）")
+        region = selector.get_region()
+        if region:
+            # 计算中心点作为点击位置
+            center_x = region[0] + region[2] // 2
+            center_y = region[1] + region[3] // 2
+            self.click_region = (center_x, center_y)
+            self.click_label.config(
+                text=f"点击点: ({center_x}, {center_y})"
+            )
+            # 更新配置
+            self.config['click_region'] = self.click_region
+            save_config(self.config)
+
     def start_monitoring(self):
         """验证并保存设置"""
         try:
-            # 获取分辨率
-            self.resolution = self.selected_resolution.get()
+
 
             # 获取并验证阈值
             threshold1 = int(self.threshold1_entry.get().replace(",", ""))
@@ -192,8 +378,19 @@ class ResolutionSelector:
             self.threshold1_val = threshold1
             self.threshold2_val = threshold2
 
+            # 检查区域是否已选择
+            if not self.monitor_region:
+                messagebox.showerror("错误", "请先选择监控区域")
+                return
+
+            if not self.click_region:
+                messagebox.showerror("错误", "请先选择点击区域")
+                return
+
             # 保存配置
-            save_config(threshold1, threshold2)
+            self.config['threshold1'] = threshold1
+            self.config['threshold2'] = threshold2
+            save_config(self.config)
 
             # 关闭窗口
             self.rs.destroy()
@@ -201,9 +398,14 @@ class ResolutionSelector:
         except ValueError:
             messagebox.showerror("错误", "请输入有效的整数阈值")
 
+    def on_close(self):
+        """处理窗口关闭事件"""
+        self.closed_by_user = True
+        self.rs.destroy()
+
 
 class OverlayApp:
-    def __init__(self, root, resolution, threshold1, threshold2):
+    def __init__(self, root, threshold1, threshold2, monitor_region, click_region):
         """初始化主应用，接收配置参数"""
         self.root = root
         self.root.title("鼠鼠伴生器灵Ver1.1")
@@ -212,37 +414,31 @@ class OverlayApp:
         self.THRESHOLD1 = threshold1
         self.THRESHOLD2 = threshold2
 
-        # 根据选择的分辨率设置参数
-        res_info = RESOLUTION_MAP[resolution]
-        self.WIDTH = res_info["width"]
-        self.HEIGHT = res_info["height"]
-
-        # ====== 动态计算区域 ======
+        # 使用用户选择的区域
         self.MONITOR_REGION = {
-            'top': int(self.HEIGHT * 1240 / 1440),
-            'left': int(self.WIDTH * 180 / 2560),
-            'width': int(self.WIDTH * 200 / 2560),
-            'height': int(self.HEIGHT * 40 / 1440)
+            'left': monitor_region[0],
+            'top': monitor_region[1],
+            'width': monitor_region[2],
+            'height': monitor_region[3]
         }
-        self.CLICK_POSITION = (
-            int(self.WIDTH * 2200 / 2560),
-            int(self.HEIGHT * 1220 / 1440)
-        )
-        # ========================
+        self.CLICK_POSITION = click_region
 
         # 显示当前配置信息
         config_frame = tk.Frame(root)
         config_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Label(config_frame,
-                 text=f"分辨率: {resolution} ({self.WIDTH}x{self.HEIGHT})",
-                 font=("微软雅黑", 9),
-                 fg="blue").pack(side=tk.LEFT, padx=10)
 
         tk.Label(config_frame,
                  text=f"最低价{self.THRESHOLD1:,}HV＄\n最高价{self.THRESHOLD2:,}HV＄",
                  font=("微软雅黑", 9),
                  fg="green").pack(side=tk.RIGHT, padx=10)
+
+        # 显示监控区域信息
+        tk.Label(config_frame,
+                 text=f"监控区域: {monitor_region[0]}x{monitor_region[1]} "
+                      f"({monitor_region[2]}x{monitor_region[3]})",
+                 font=("微软雅黑", 8),
+                 fg="gray").pack(side=tk.LEFT, padx=10)
 
         # 窗口设置
         self.root.attributes('-topmost', True)  # 窗口置顶
@@ -271,21 +467,20 @@ class OverlayApp:
         self.status_frame.pack(fill=tk.X, padx=5, pady=2)
 
         self.status_label1 = Label(self.status_frame,
-                                  text="自动采购: 已暂停",
-                                  font=("微软雅黑", 9),
-                                  fg="gray")  # 初始为灰色暂停状态
+                                   text="自动采购: 已暂停",
+                                   font=("微软雅黑", 9),
+                                   fg="gray")  # 初始为灰色暂停状态
         self.status_label1.pack(side=tk.LEFT)
 
         self.status_label2 = Label(self.status_frame,
-                                  text="自动刷新: 未启动",
-                                  font=("微软雅黑", 9),
-                                  fg="gray")  # 初始为灰色暂停状态
+                                   text="自动刷新: 未启动",
+                                   font=("微软雅黑", 9),
+                                   fg="gray")  # 初始为灰色暂停状态
         self.status_label2.pack(side=tk.RIGHT)
 
         # 控制按钮
         self.btn_frame = tk.Frame(root)
         self.btn_frame.pack(fill=tk.X, padx=5, pady=5)
-
 
         # 点击计数器
         self.click_count = 0
@@ -319,7 +514,6 @@ class OverlayApp:
         )
         self.auto_refresh_label.pack(side=tk.RIGHT, padx=5)
 
-
         # 添加线程锁
         self.lock = threading.Lock()
 
@@ -333,13 +527,13 @@ class OverlayApp:
         self.thread.start()
 
     def start_global_keyboard_listener(self):
-        """启动全局键盘监听器，解决窗口焦点问题[6,7](@ref)"""
+        """启动全局键盘监听器，解决窗口焦点问题"""
         self.key_listener = KeyboardListener(on_press=self.on_key_press)
         self.key_listener.daemon = True
         self.key_listener.start()
 
     def on_key_press(self, key):
-        """全局键盘事件处理[6,7](@ref)"""
+        """全局键盘事件处理"""
         try:
             # 检测F5按键
             if key == Key.f5:
@@ -485,9 +679,8 @@ class OverlayApp:
             # 添加视觉反馈
             self.flash_canvas("green")
 
-            print(f"已点击: {self.CLICK_POSITION} (识别值: {current_num})")
         except Exception as e:
-            self.status_label.config(text=f"状态: 点击失败 - {str(e)}", fg="red")
+            self.status_label1.config(text=f"状态: 点击失败 - {str(e)}", fg="red")
             print(f"点击失败: {str(e)}")
 
     def flash_canvas(self, color):
@@ -505,13 +698,24 @@ class OverlayApp:
         self.root.destroy()
         sys.exit()
 
+
 # 启动应用
 if __name__ == "__main__":
     # 先显示配置选择器
-    selector = ResolutionSelector()
+    selector = ParameterSelector()
 
-    if not selector.resolution or not selector.threshold1_val or not selector.threshold2_val:
+    # 如果用户直接关闭了配置窗口，则退出程序
+    if selector.closed_by_user:
+        sys.exit()
+
+    # 检查是否完成配置
+    if not selector.threshold1_val or not selector.threshold2_val:
         sys.exit()  # 用户未完成配置则退出
+
+    # 检查是否选择了区域
+    if not selector.monitor_region or not selector.click_region:
+        messagebox.showwarning("警告", "请先选择监控区域和点击区域！")
+        sys.exit()
 
     # 创建主窗口并传递配置
     root = tk.Tk()
@@ -526,13 +730,14 @@ if __name__ == "__main__":
     y = 0  # 可以根据需要调整，比如设置为50就是距离顶部50像素
 
     # 设置窗口位置（不改变尺寸）
-    root.geometry(f"+{x}+{y}")
     root.iconbitmap(resource_path('mouse.ico'))
+    root.geometry(f"+{x}+{y}")
 
     # 传递配置给主应用
     app = OverlayApp(root,
-                     selector.resolution,
                      selector.threshold1_val,
-                     selector.threshold2_val)
+                     selector.threshold2_val,
+                     selector.monitor_region,
+                     selector.click_region)
     root.protocol("WM_DELETE_WINDOW", app.close_app)
     root.mainloop()
