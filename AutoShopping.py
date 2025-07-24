@@ -26,10 +26,6 @@ def resource_path(relative_path):
     return str(base_path / relative_path)
 
 
-# ====== 默认阈值配置 ======
-DEFAULT_THRESHOLD1 = 200000
-DEFAULT_THRESHOLD2 = 320000
-
 # ====== Tesseract配置 ======
 TESSERACT_PATH = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
@@ -41,10 +37,12 @@ CONFIG_FILE = "ocr_config.json"
 def load_config():
     """加载配置文件，返回阈值设置和区域配置"""
     config = {
-        'threshold1': DEFAULT_THRESHOLD1,
-        'threshold2': DEFAULT_THRESHOLD2,
+        'threshold1': "愣着干嘛？",
+        'threshold2': "等我给填？",
+        'max_attempts': 1,
         'monitor_region': None,
-        'click_region': None
+        'click_region': None,
+        'num_region': None
     }
 
     if os.path.exists(CONFIG_FILE):
@@ -114,7 +112,7 @@ class RegionSelector:
         self.top.wait_window()
 
     def _get_windows_scaling(self):
-        """获取Windows系统DPI缩放比例[6,7](@ref)"""
+        """获取Windows系统DPI缩放比例"""
         try:
             # 获取缩放因子（125%缩放返回1.25）
             scale_factor = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100.0
@@ -156,8 +154,7 @@ class RegionSelector:
         x2 = max(self.start_x, end_x)
         y2 = max(self.start_y, end_y)
 
-        # 保存区域坐标
-        self.region = (int(x1 * self.scaling_factor), int(y1* self.scaling_factor),  int((x2 - x1)* self.scaling_factor),  int((y2 - y1)* self.scaling_factor))
+        self.region = (x1, y1,  x2-x1,  y2-y1)
 
         # 删除临时虚线框
         if self.current_rect:
@@ -209,10 +206,12 @@ class ParameterSelector:
 
         # 加载上次配置
         self.config = load_config()
+        self.max_attempts = self.config['max_attempts']
         self.threshold1 = self.config['threshold1']
         self.threshold2 = self.config['threshold2']
         self.monitor_region = self.config['monitor_region']
         self.click_region = self.config['click_region']
+        self.num_region = self.config['num_region']
 
         # 设置样式
         self.rs.configure(bg="#f0f0f0")
@@ -221,7 +220,20 @@ class ParameterSelector:
                  font=("微软雅黑", 12, "bold"),
                  bg="#f0f0f0").pack(pady=10)
 
+        # === 最大尝试次数区域 ===
+        attempts_frame = tk.Frame(self.rs, bg="#f0f0f0")
+        attempts_frame.pack(fill=tk.X, padx=20, pady=10)
 
+        tk.Label(attempts_frame,
+                 text="最大购买尝试次数:",
+                 font=("微软雅黑", 10),
+                 bg="#f0f0f0").grid(row=0, column=0, sticky="w", pady=5)
+
+        self.max_attempts_entry = tk.Entry(attempts_frame, width=10)
+        self.max_attempts_entry.grid(row=0, column=1, padx=5, pady=2)
+        self.max_attempts_entry.insert(0, str(self.max_attempts))
+        tk.Label(attempts_frame, text="次(达到此次数后自动暂停)", bg="#f0f0f0",
+                 font=("微软雅黑", 8), fg="#666").grid(row=0, column=2, sticky="w")
         # === 区域选择区域 ===
         region_frame = tk.Frame(self.rs, bg="#f0f0f0")
         region_frame.pack(fill=tk.X, padx=20, pady=10)
@@ -233,17 +245,23 @@ class ParameterSelector:
 
         # 监控区域按钮
         self.monitor_btn = tk.Button(region_frame,
-                                     text="框选价格监控区域",
+                                     text="价格监控区域",
                                      command=self.select_monitor_region,
                                      font=("微软雅黑", 9))
         self.monitor_btn.grid(row=0, column=1, padx=5)
 
-        # 点击区域按钮
+        # 点击按钮区域
         self.click_btn = tk.Button(region_frame,
-                                   text="框选购买按钮区域",
+                                   text="购买按钮区域",
                                    command=self.select_click_region,
                                    font=("微软雅黑", 9))
         self.click_btn.grid(row=0, column=2, padx=5)
+        # 点击数量条区域
+        self.click_btn = tk.Button(region_frame,
+                                   text="数量滑块区域",
+                                   command=self.select_num_region,
+                                   font=("微软雅黑", 9))
+        self.click_btn.grid(row=0, column=3, padx=5)
 
         # 显示当前区域信息
         self.monitor_label = tk.Label(region_frame,
@@ -261,7 +279,13 @@ class ParameterSelector:
                                     fg="#666",
                                     bg="#f0f0f0")
         self.click_label.grid(row=2, column=1, columnspan=2, sticky="w")
-
+        self.num_label = tk.Label(region_frame,
+                                    text="未选择" if not self.num_region else
+                                    f"数量点击点: ({self.num_region[0]}, {self.num_region[1]})",
+                                    font=("微软雅黑", 8),
+                                    fg="#666",
+                                    bg="#f0f0f0")
+        self.num_label.grid(row=3, column=1, columnspan=2, sticky="w")
         # === 阈值设置区域 ===
         threshold_frame = tk.Frame(self.rs, bg="#f0f0f0")
         threshold_frame.pack(fill=tk.X, padx=20, pady=10)
@@ -288,18 +312,18 @@ class ParameterSelector:
                  font=("微软雅黑", 8), fg="#666").grid(row=2, column=2, sticky="w")
 
         # 默认值按钮
-        def set_default_thresholds():
+        def set_last_thresholds():
             self.threshold1_entry.delete(0, tk.END)
-            self.threshold1_entry.insert(0, str(DEFAULT_THRESHOLD1))
+            self.threshold1_entry.insert(0, str(self.threshold1))
             self.threshold2_entry.delete(0, tk.END)
-            self.threshold2_entry.insert(0, str(DEFAULT_THRESHOLD2))
+            self.threshold2_entry.insert(0, str(self.threshold2))
 
-        tk.Button(threshold_frame, text="恢复默认",
-                  command=set_default_thresholds,
+        tk.Button(threshold_frame, text="恢复为上次参数",
+                  command=set_last_thresholds,
                   font=("微软雅黑", 8), bg="#e0e0e0").grid(row=3, column=1, pady=5)
 
         # 确认按钮
-        tk.Button(self.rs, text="开始监控",
+        tk.Button(self.rs, text="开始抢购",
                   command=self.start_monitoring,
                   font=("微软雅黑", 10), bg="#4CAF50", fg="white",
                   padx=20, pady=5).pack(pady=15)
@@ -336,7 +360,7 @@ class ParameterSelector:
         if region:
             self.monitor_region = region
             self.monitor_label.config(
-                text=f"监控区: {region[0]}x{region[1]} ({region[2]}x{region[3]})"
+                text=f"价格监控区: {region[0]}x{region[1]} ({region[2]}x{region[3]})"
             )
             # 更新配置
             self.config['monitor_region'] = region
@@ -352,20 +376,43 @@ class ParameterSelector:
             center_y = region[1] + region[3] // 2
             self.click_region = (center_x, center_y)
             self.click_label.config(
-                text=f"点击点: ({center_x}, {center_y})"
+                text=f"购买点击点: ({center_x}, {center_y})"
             )
             # 更新配置
             self.config['click_region'] = self.click_region
+            save_config(self.config)
+    def select_num_region(self):
+        """选择点击区域"""
+        selector = RegionSelector(self.rs, "请框选点击区域（数量滑块）")
+        region = selector.get_region()
+        if region:
+            # 计算中心点作为点击位置
+            center_x = region[0] + region[2] // 2
+            center_y = region[1] + region[3] // 2
+            self.num_region = (center_x, center_y)
+            self.num_label.config(
+                text=f"数量点击点: ({center_x}, {center_y})"
+            )
+            # 更新配置
+            self.config['num_region'] = self.num_region
             save_config(self.config)
 
     def start_monitoring(self):
         """验证并保存设置"""
         try:
 
-
+            # 获取并验证最大尝试次数
+            max_attempts = int(self.max_attempts_entry.get().replace(",", ""))
             # 获取并验证阈值
             threshold1 = int(self.threshold1_entry.get().replace(",", ""))
             threshold2 = int(self.threshold2_entry.get().replace(",", ""))
+            if max_attempts <= 0:
+                messagebox.showerror("错误", "最大尝试次数>=1且为整数")
+                return
+            self.max_attempts_val = max_attempts
+            # 保存配置
+            self.config['max_attempts'] = max_attempts
+            save_config(self.config)
 
             if threshold1 >= threshold2:
                 messagebox.showerror("错误", "上限阈值必须大于下限阈值")
@@ -405,15 +452,16 @@ class ParameterSelector:
 
 
 class OverlayApp:
-    def __init__(self, root, threshold1, threshold2, monitor_region, click_region):
+    def __init__(self, root, threshold1, threshold2, max_attempts, monitor_region, click_region, num_region):
         """初始化主应用，接收配置参数"""
         self.root = root
-        self.root.title("鼠鼠伴生器灵Ver1.1")
+        self.root.title("鼠鼠伴生器灵Ver1.3")
 
         # 保存阈值配置
         self.THRESHOLD1 = threshold1
         self.THRESHOLD2 = threshold2
-
+        # 保存最大尝试次数
+        self.MAX_ATTEMPTS = max_attempts
         # 使用用户选择的区域
         self.MONITOR_REGION = {
             'left': monitor_region[0],
@@ -422,11 +470,17 @@ class OverlayApp:
             'height': monitor_region[3]
         }
         self.CLICK_POSITION = click_region
+        self.NUM_POSITION = num_region
+        # 在配置信息显示区域添加最大尝试次数的显示
 
         # 显示当前配置信息
         config_frame = tk.Frame(root)
         config_frame.pack(fill=tk.X, padx=5, pady=5)
 
+        tk.Label(config_frame,
+                 text=f"最大尝试次数: {self.MAX_ATTEMPTS}次",
+                 font=("微软雅黑", 8),
+                 fg="blue").pack(side=tk.LEFT, padx=10)
 
         tk.Label(config_frame,
                  text=f"最低价{self.THRESHOLD1:,}HV＄\n最高价{self.THRESHOLD2:,}HV＄",
@@ -525,7 +579,102 @@ class OverlayApp:
         self.thread = threading.Thread(target=self.update_overlay)
         self.thread.daemon = True
         self.thread.start()
+        # 添加重新配置按钮
+        self.reconfig_btn = tk.Button(self.btn_frame,
+                                      text="重新配置",
+                                      command=self.initiate_reconfiguration,
+                                      bg="#9C27B0",  # 紫色背景
+                                      fg="white")
+        self.reconfig_btn.pack(side=tk.RIGHT, padx=5)
 
+        # 保存原始配置以便重新初始化
+        self.original_config = {
+            'threshold1': threshold1,
+            'threshold2': threshold2,
+            'monitor_region': monitor_region,
+            'click_region': click_region
+        }
+
+    def initiate_reconfiguration(self):
+        """启动重新配置流程"""
+        # 暂停所有操作
+        self.click_paused = True
+        self.auto_refresh_running = False
+
+        # 更新状态
+        self.status_label1.config(text="自动采购: 配置中...", fg="blue")
+        self.status_label2.config(text="自动刷新: 已暂停", fg="gray")
+        self.auto_refresh_label.config(text="F5启动自动刷新", bg="#2196F3")
+
+        # 安全关闭当前窗口
+        self.safe_shutdown()
+
+        # 创建新配置窗口
+        self.root.after(100, self.launch_new_configuration)
+
+    def safe_shutdown(self):
+        """安全停止所有线程和资源"""
+        # 停止自动刷新
+        self.auto_refresh_running = False
+
+        # 停止主循环
+        self.running = False
+
+        # 停止键盘监听器
+        if hasattr(self, 'key_listener'):
+            self.key_listener.stop()
+
+        # 短暂等待确保线程退出
+        time.sleep(0.1)
+
+    def launch_new_configuration(self):
+        """启动新的配置窗口"""
+        # 关闭当前主窗口
+        self.root.destroy()
+
+        # 创建新的配置选择器
+        selector = ParameterSelector()
+
+        # 如果用户完成新配置，创建新的主窗口
+        if not selector.closed_by_user and selector.threshold1_val and selector.threshold2_val:
+            # 创建新的主窗口
+            new_root = tk.Tk()
+            new_root.iconbitmap(resource_path('mouse.ico'))
+
+            # 计算并设置右上角位置
+            screen_width = new_root.winfo_screenwidth()
+            new_root.update_idletasks()
+            width = new_root.winfo_width()
+            x = screen_width - width
+            new_root.geometry(f"+{x}+0")
+
+            # 使用新配置启动应用
+            OverlayApp(new_root,
+                       selector.threshold1_val,
+                       selector.threshold2_val,
+                       selector.max_attempts_val,
+                       selector.monitor_region,
+                       selector.click_region,
+                       selector.num_region)
+            new_root.protocol("WM_DELETE_WINDOW", lambda: self.close_app(new_root))
+            new_root.mainloop()
+
+    def close_app(self, window=None):
+        """安全退出应用（支持指定窗口）"""
+        if not window:
+            window = self.root
+
+        # 停止所有操作
+        self.auto_refresh_running = False
+        self.running = False
+
+        # 停止键盘监听器
+        if hasattr(self, 'key_listener'):
+            self.key_listener.stop()
+
+        # 销毁窗口
+        window.destroy()
+        sys.exit()
     def start_global_keyboard_listener(self):
         """启动全局键盘监听器，解决窗口焦点问题"""
         self.key_listener = KeyboardListener(on_press=self.on_key_press)
@@ -655,18 +804,26 @@ class OverlayApp:
         """在指定位置执行鼠标点击"""
         try:
             # 更新状态显示
-            self.status_label1.config(text=f"自动购买: 尝试以 ({current_num} 哈夫币)购买", fg="red")
+            self.status_label1.config(text=f"自动购买: 尝试以（{current_num}哈夫币）购买", fg="red")
 
             # 使用pynput执行精确点击
             original_pos = self.mouse.position  # 保存原始位置
 
             # 移动鼠标到目标位置
-            self.mouse.position = self.CLICK_POSITION
-            time.sleep(0.05)  # 确保移动到位
+            self.mouse.position = self.NUM_POSITION
+            time.sleep(0.02)  # 确保移动到位
 
             # 执行左键点击
             self.mouse.click(Button.left, 1)  # 单次点击
-            time.sleep(0.05)  # 确保移动到位
+            time.sleep(0.02)  # 确保移动到位
+
+            # 移动鼠标到目标位置
+            self.mouse.position = self.CLICK_POSITION
+            time.sleep(0.02)  # 确保移动到位
+
+            # 执行左键点击
+            self.mouse.click(Button.left, 1)  # 单次点击
+            time.sleep(0.02)  # 确保移动到位
 
             # 可选：返回原始位置（根据需求决定）
             self.mouse.position = original_pos
@@ -676,8 +833,27 @@ class OverlayApp:
             self.click_count += 1
             self.click_count_label.config(text=f"点击: {self.click_count}次")
 
-            # 添加视觉反馈
-            self.flash_canvas("green")
+            if self.click_count >= self.MAX_ATTEMPTS:
+                # 自动刷新暂停
+                self.root.after(0, self.toggle_auto_refresh)
+
+                # 自动暂停自动采购
+                self.click_paused = True
+                self.toggle_button.config(text="允许购买", bg="#4CAF50")
+                self.status_label1.config(text=f"已达最大尝试次数({self.MAX_ATTEMPTS})", fg="red")
+
+                # 添加视觉反馈
+                self.flash_canvas("red")
+
+                # 显示提示信息
+                messagebox.showinfo("提示", f"已达到最大尝试次数({self.MAX_ATTEMPTS})，点击计数归零，自动采购已暂停")
+
+                self.click_count = 0
+                self.click_count_label.config(text=f"点击: {self.click_count}次")
+
+            else:
+                # 添加视觉反馈
+                self.flash_canvas("green")
 
         except Exception as e:
             self.status_label1.config(text=f"状态: 点击失败 - {str(e)}", fg="red")
@@ -701,6 +877,12 @@ class OverlayApp:
 
 # 启动应用
 if __name__ == "__main__":
+    # 设置DPI感知（Windows）
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except:
+        pass
+
     # 先显示配置选择器
     selector = ParameterSelector()
 
@@ -727,7 +909,7 @@ if __name__ == "__main__":
 
     # 计算右上角位置（x: 屏幕右边减去窗口宽度，y: 0）
     x = screen_width - width
-    y = 0  # 可以根据需要调整，比如设置为50就是距离顶部50像素
+    y = 0  # 可以根据需要调整，比如设置为50 就是距离顶部50像素
 
     # 设置窗口位置（不改变尺寸）
     root.iconbitmap(resource_path('mouse.ico'))
@@ -737,7 +919,9 @@ if __name__ == "__main__":
     app = OverlayApp(root,
                      selector.threshold1_val,
                      selector.threshold2_val,
+                     selector.max_attempts_val,  # 新增
                      selector.monitor_region,
-                     selector.click_region)
+                     selector.click_region,
+                     selector.num_region)
     root.protocol("WM_DELETE_WINDOW", app.close_app)
     root.mainloop()
