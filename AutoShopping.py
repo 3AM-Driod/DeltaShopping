@@ -14,6 +14,9 @@ import os
 import json
 from pathlib import Path
 import ctypes
+import platform
+from datetime import datetime, timedelta
+
 
 def resource_path(relative_path):
     """获取资源文件的绝对路径。在开发时和打包后均可使用"""
@@ -42,7 +45,8 @@ def load_config():
         'max_attempts': 1,
         'monitor_region': None,
         'click_region': None,
-        'num_region': None
+        'num_region': None,
+        'shutdown_time': None  # 新增关机时间配置
     }
 
     if os.path.exists(CONFIG_FILE):
@@ -63,6 +67,23 @@ def save_config(config):
     """保存配置文件"""
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f)
+
+
+# ====== 新增关机功能 ======
+def shutdown_computer():
+    """执行关机命令，支持Windows和Linux系统"""
+    try:
+        system_name = platform.system()
+        if system_name == "Windows":
+            # Windows关机命令（立即关机）
+            os.system("shutdown /s /t 0")
+        elif system_name == "Linux":
+            # Linux关机命令
+            os.system("sudo shutdown -h now")
+        else:
+            print(f"不支持的系统: {system_name}")
+    except Exception as e:
+        print(f"关机失败: {str(e)}")
 
 
 class RegionSelector:
@@ -119,6 +140,7 @@ class RegionSelector:
             return scale_factor
         except:
             return 1.0  # 默认无缩放
+
     def on_press(self, event):
         """鼠标按下事件"""
         self.start_x = event.x
@@ -154,7 +176,7 @@ class RegionSelector:
         x2 = max(self.start_x, end_x)
         y2 = max(self.start_y, end_y)
 
-        self.region = (x1, y1,  x2-x1,  y2-y1)
+        self.region = (x1, y1, x2 - x1, y2 - y1)
 
         # 删除临时虚线框
         if self.current_rect:
@@ -212,6 +234,7 @@ class ParameterSelector:
         self.monitor_region = self.config['monitor_region']
         self.click_region = self.config['click_region']
         self.num_region = self.config['num_region']
+        self.shutdown_time = self.config['shutdown_time']  # 关机时间
 
         # 设置样式
         self.rs.configure(bg="#f0f0f0")
@@ -280,11 +303,11 @@ class ParameterSelector:
                                     bg="#f0f0f0")
         self.click_label.grid(row=2, column=1, columnspan=2, sticky="w")
         self.num_label = tk.Label(region_frame,
-                                    text="未选择" if not self.num_region else
-                                    f"数量点击点: ({self.num_region[0]}, {self.num_region[1]})",
-                                    font=("微软雅黑", 8),
-                                    fg="#666",
-                                    bg="#f0f0f0")
+                                  text="未选择" if not self.num_region else
+                                  f"数量点击点: ({self.num_region[0]}, {self.num_region[1]})",
+                                  font=("微软雅黑", 8),
+                                  fg="#666",
+                                  bg="#f0f0f0")
         self.num_label.grid(row=3, column=1, columnspan=2, sticky="w")
         # === 阈值设置区域 ===
         threshold_frame = tk.Frame(self.rs, bg="#f0f0f0")
@@ -322,6 +345,28 @@ class ParameterSelector:
                   command=set_last_thresholds,
                   font=("微软雅黑", 8), bg="#e0e0e0").grid(row=3, column=1, pady=5)
 
+        # === 新增定时关机设置区域 ===
+        shutdown_frame = tk.Frame(self.rs, bg="#f0f0f0")
+        shutdown_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        tk.Label(shutdown_frame,
+                 text="定时关机设置:",
+                 font=("微软雅黑", 10),
+                 bg="#f0f0f0").grid(row=0, column=0, sticky="w", pady=5)
+
+        # 关机时间输入框
+        tk.Label(shutdown_frame, text="关机时间:", bg="#f0f0f0").grid(row=1, column=0, sticky="e")
+        self.shutdown_entry = tk.Entry(shutdown_frame, width=10)
+        self.shutdown_entry.grid(row=1, column=1, padx=5, pady=2)
+        self.shutdown_entry.insert(0, self.shutdown_time if self.shutdown_time else "")
+        tk.Label(shutdown_frame, text="格式: HH:MM (24小时制)", bg="#f0f0f0",
+                 font=("微软雅黑", 8), fg="#666").grid(row=1, column=2, sticky="w")
+
+        # 当前时间显示
+        current_time = datetime.now().strftime("%H:%M")
+        tk.Label(shutdown_frame, text=f"当前时间: {current_time}", bg="#f0f0f0",
+                 font=("微软雅黑", 8), fg="#666").grid(row=2, column=1, sticky="w", pady=5)
+
         # 确认按钮
         tk.Button(self.rs, text="开始抢购",
                   command=self.start_monitoring,
@@ -331,6 +376,7 @@ class ParameterSelector:
         # 状态变量
         self.threshold1_val = None
         self.threshold2_val = None
+        self.shutdown_time_val = None  # 新增关机时间变量
         self.closed_by_user = False
 
         self.rs.mainloop()
@@ -381,6 +427,7 @@ class ParameterSelector:
             # 更新配置
             self.config['click_region'] = self.click_region
             save_config(self.config)
+
     def select_num_region(self):
         """选择点击区域"""
         selector = RegionSelector(self.rs, "请框选点击区域（数量滑块）")
@@ -434,6 +481,30 @@ class ParameterSelector:
                 messagebox.showerror("错误", "请先选择点击区域")
                 return
 
+            # 检查数量区域是否已选择
+            if not self.num_region:
+                messagebox.showerror("错误", "请先选择数量区域")
+                return
+
+            # 处理定时关机设置
+            shutdown_time_str = self.shutdown_entry.get().strip()
+            if shutdown_time_str:
+                try:
+                    # 验证时间格式
+                    if not self.validate_time_format(shutdown_time_str):
+                        messagebox.showerror("错误", "关机时间格式错误，请使用HH:MM格式（24小时制）")
+                        return
+
+                    # 保存关机时间
+                    self.shutdown_time_val = shutdown_time_str
+                    self.config['shutdown_time'] = shutdown_time_str
+                except ValueError:
+                    messagebox.showerror("错误", "关机时间格式错误，请使用HH:MM格式（24小时制）")
+                    return
+            else:
+                self.shutdown_time_val = None
+                self.config['shutdown_time'] = None
+
             # 保存配置
             self.config['threshold1'] = threshold1
             self.config['threshold2'] = threshold2
@@ -445,6 +516,15 @@ class ParameterSelector:
         except ValueError:
             messagebox.showerror("错误", "请输入有效的整数阈值")
 
+    def validate_time_format(self, time_str):
+        """验证时间格式是否为HH:MM"""
+        try:
+            # 尝试解析时间
+            datetime.strptime(time_str, "%H:%M")
+            return True
+        except ValueError:
+            return False
+
     def on_close(self):
         """处理窗口关闭事件"""
         self.closed_by_user = True
@@ -452,10 +532,11 @@ class ParameterSelector:
 
 
 class OverlayApp:
-    def __init__(self, root, threshold1, threshold2, max_attempts, monitor_region, click_region, num_region):
+    def __init__(self, root, threshold1, threshold2, max_attempts, monitor_region, click_region, num_region,
+                 shutdown_time=None):
         """初始化主应用，接收配置参数"""
         self.root = root
-        self.root.title("鼠鼠伴生器灵Ver1.3")
+        self.root.title("鼠鼠伴生器灵Ver1.4")
 
         # 保存阈值配置
         self.THRESHOLD1 = threshold1
@@ -471,7 +552,9 @@ class OverlayApp:
         }
         self.CLICK_POSITION = click_region
         self.NUM_POSITION = num_region
-        # 在配置信息显示区域添加最大尝试次数的显示
+        self.shutdown_time = shutdown_time  # 保存关机时间
+        self.shutdown_timer = None  # 关机定时器
+        self.shutdown_delay = None  # 关机倒计时（秒）
 
         # 显示当前配置信息
         config_frame = tk.Frame(root)
@@ -496,7 +579,7 @@ class OverlayApp:
 
         # 窗口设置
         self.root.attributes('-topmost', True)  # 窗口置顶
-        self.root.attributes('-alpha', 0.7)  # 70%透明度
+        self.root.attributes('-alpha', 1)  # 70%透明度
 
         # 初始化鼠标控制器
         self.mouse = MouseController()
@@ -531,6 +614,13 @@ class OverlayApp:
                                    font=("微软雅黑", 9),
                                    fg="gray")  # 初始为灰色暂停状态
         self.status_label2.pack(side=tk.RIGHT)
+
+        # ====== 新增关机倒计时显示 ======
+        self.shutdown_label = Label(self.status_frame,
+                                    text="",
+                                    font=("微软雅黑", 9),
+                                    fg="purple")
+        self.shutdown_label.pack(side=tk.RIGHT, padx=10)
 
         # 控制按钮
         self.btn_frame = tk.Frame(root)
@@ -592,14 +682,93 @@ class OverlayApp:
             'threshold1': threshold1,
             'threshold2': threshold2,
             'monitor_region': monitor_region,
-            'click_region': click_region
+            'click_region': click_region,
+            'shutdown_time': shutdown_time
         }
+
+        # ====== 启动定时关机功能 ======
+        if self.shutdown_time:
+            self.start_shutdown_timer()
+
+    def start_shutdown_timer(self):
+        """启动定时关机任务"""
+        try:
+            # 解析关机时间
+            shutdown_hour, shutdown_minute = map(int, self.shutdown_time.split(':'))
+
+            # 获取当前时间
+            now = datetime.now()
+            # 构建目标关机时间（今天）
+            shutdown_datetime = now.replace(hour=shutdown_hour, minute=shutdown_minute, second=0, microsecond=0)
+
+            # 如果目标时间已过，设置为明天
+            if shutdown_datetime < now:
+                shutdown_datetime += timedelta(days=1)
+
+            # 计算时间差（秒）
+            self.shutdown_delay = (shutdown_datetime - now).total_seconds()
+
+            # 更新状态显示
+            self.shutdown_label.config(
+                text=f"定时关机: {self.shutdown_time} (倒计时: {self.format_time(self.shutdown_delay)})")
+
+            # 启动定时关机线程
+            self.shutdown_timer = threading.Timer(self.shutdown_delay, self.initiate_shutdown)
+            self.shutdown_timer.daemon = True
+            self.shutdown_timer.start()
+
+            # 启动倒计时更新
+            self.update_shutdown_countdown()
+
+        except Exception as e:
+            print(f"定时关机设置失败: {str(e)}")
+            self.shutdown_label.config(text=f"定时关机设置失败", fg="red")
+
+    def format_time(self, seconds):
+        """将秒数格式化为HH:MM:SS"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        seconds = int(seconds % 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def update_shutdown_countdown(self):
+        """更新关机倒计时显示"""
+        if self.shutdown_delay is None or self.shutdown_delay <= 0:
+            return
+
+        # 减少倒计时
+        self.shutdown_delay -= 1
+
+        # 更新显示
+        if self.shutdown_delay > 0:
+            self.shutdown_label.config(
+                text=f"定时关机: {self.shutdown_time} (倒计时: {self.format_time(self.shutdown_delay)})")
+            # 每秒更新一次
+            self.root.after(1000, self.update_shutdown_countdown)
+        else:
+            self.shutdown_label.config(text="正在关机...", fg="red")
+
+    def initiate_shutdown(self):
+        """执行关机操作"""
+        # 在主线程中更新UI
+        self.root.after(0, lambda: self.shutdown_label.config(text="正在关机...", fg="red"))
+        self.root.update()
+
+        # 给用户1秒钟时间看到提示
+        time.sleep(1)
+
+        # 执行关机命令
+        shutdown_computer()
 
     def initiate_reconfiguration(self):
         """启动重新配置流程"""
         # 暂停所有操作
         self.click_paused = True
         self.auto_refresh_running = False
+
+        # 取消关机定时器
+        if self.shutdown_timer and self.shutdown_timer.is_alive():
+            self.shutdown_timer.cancel()
 
         # 更新状态
         self.status_label1.config(text="自动采购: 配置中...", fg="blue")
@@ -623,6 +792,10 @@ class OverlayApp:
         # 停止键盘监听器
         if hasattr(self, 'key_listener'):
             self.key_listener.stop()
+
+        # 取消关机定时器
+        if self.shutdown_timer and self.shutdown_timer.is_alive():
+            self.shutdown_timer.cancel()
 
         # 短暂等待确保线程退出
         time.sleep(0.1)
@@ -655,7 +828,8 @@ class OverlayApp:
                        selector.max_attempts_val,
                        selector.monitor_region,
                        selector.click_region,
-                       selector.num_region)
+                       selector.num_region,
+                       selector.shutdown_time_val)  # 传递关机时间
             new_root.protocol("WM_DELETE_WINDOW", lambda: self.close_app(new_root))
             new_root.mainloop()
 
@@ -672,9 +846,14 @@ class OverlayApp:
         if hasattr(self, 'key_listener'):
             self.key_listener.stop()
 
+        # 取消关机定时器
+        if self.shutdown_timer and self.shutdown_timer.is_alive():
+            self.shutdown_timer.cancel()
+
         # 销毁窗口
         window.destroy()
         sys.exit()
+
     def start_global_keyboard_listener(self):
         """启动全局键盘监听器，解决窗口焦点问题"""
         self.key_listener = KeyboardListener(on_press=self.on_key_press)
@@ -870,6 +1049,9 @@ class OverlayApp:
         self.running = False
         if hasattr(self, 'key_listener'):
             self.key_listener.stop()  # 停止全局键盘监听器
+        # 取消关机定时器
+        if self.shutdown_timer and self.shutdown_timer.is_alive():
+            self.shutdown_timer.cancel()
         time.sleep(0.3)  # 等待线程结束
         self.root.destroy()
         sys.exit()
@@ -895,8 +1077,8 @@ if __name__ == "__main__":
         sys.exit()  # 用户未完成配置则退出
 
     # 检查是否选择了区域
-    if not selector.monitor_region or not selector.click_region:
-        messagebox.showwarning("警告", "请先选择监控区域和点击区域！")
+    if not selector.monitor_region or not selector.click_region or not selector.num_region:
+        messagebox.showwarning("警告", "请先选择监控区域、点击区域和数量区域！")
         sys.exit()
 
     # 创建主窗口并传递配置
@@ -919,9 +1101,10 @@ if __name__ == "__main__":
     app = OverlayApp(root,
                      selector.threshold1_val,
                      selector.threshold2_val,
-                     selector.max_attempts_val,  # 新增
+                     selector.max_attempts_val,
                      selector.monitor_region,
                      selector.click_region,
-                     selector.num_region)
+                     selector.num_region,
+                     selector.shutdown_time_val)  # 传递关机时间
     root.protocol("WM_DELETE_WINDOW", app.close_app)
     root.mainloop()
