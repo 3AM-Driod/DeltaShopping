@@ -1,6 +1,9 @@
 # DeltaShopping
 DeltaForce Shopping Tool For ShuShu
-Python 3.9.12
+
+exe版本在右侧 release/释放 中
+
+编译环境Python 3.9.12详细模块见requirements.txt
 
 开黑交流群：162103846
 
