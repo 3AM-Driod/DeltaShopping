@@ -46,7 +46,9 @@ def load_config():
         'monitor_region': None,
         'click_region': None,
         'num_region': None,
-        'shutdown_time': None  # 新增关机时间配置
+        'shutdown_time': None,  # 新增关机时间配置
+        'auto_refresh_time': None,  # 新增关机时间配置
+        'refresh_interval_steps': 10
     }
 
     if os.path.exists(CONFIG_FILE):
@@ -235,14 +237,16 @@ class ParameterSelector:
         self.click_region = self.config['click_region']
         self.num_region = self.config['num_region']
         self.shutdown_time = self.config['shutdown_time']  # 关机时间
-
+        self.auto_refresh_time = self.config['auto_refresh_time']  # 关机时间
+        self.refresh_interval_steps = self.config['refresh_interval_steps']
         # 设置样式
         self.rs.configure(bg="#f0f0f0")
         tk.Label(self.rs,
                  text="三脚粥鼠鼠交流群qq:162103846",
                  font=("微软雅黑", 12, "bold"),
                  bg="#f0f0f0").pack(pady=10)
-
+        # 创建刷新间隔控制面板
+        self.create_refresh_control_panel()
         # === 最大尝试次数区域 ===
         attempts_frame = tk.Frame(self.rs, bg="#f0f0f0")
         attempts_frame.pack(fill=tk.X, padx=20, pady=10)
@@ -346,26 +350,34 @@ class ParameterSelector:
                   font=("微软雅黑", 8), bg="#e0e0e0").grid(row=3, column=1, pady=5)
 
         # === 新增定时关机设置区域 ===
-        shutdown_frame = tk.Frame(self.rs, bg="#f0f0f0")
-        shutdown_frame.pack(fill=tk.X, padx=20, pady=10)
+        timer_frame = tk.Frame(self.rs, bg="#f0f0f0")
+        timer_frame.pack(fill=tk.X, padx=20, pady=10)
 
-        tk.Label(shutdown_frame,
-                 text="定时关机设置:",
+        tk.Label(timer_frame,
+                 text="定时设置:",
                  font=("微软雅黑", 10),
                  bg="#f0f0f0").grid(row=0, column=0, sticky="w", pady=5)
 
         # 关机时间输入框
-        tk.Label(shutdown_frame, text="关机时间:", bg="#f0f0f0").grid(row=1, column=0, sticky="e")
-        self.shutdown_entry = tk.Entry(shutdown_frame, width=10)
+        tk.Label(timer_frame, text="          执行关机时间:", bg="#f0f0f0",
+                 font=("微软雅黑", 9),).grid(row=1, column=0, sticky="e")
+        self.shutdown_entry = tk.Entry(timer_frame, width=10)
         self.shutdown_entry.grid(row=1, column=1, padx=5, pady=2)
         self.shutdown_entry.insert(0, self.shutdown_time if self.shutdown_time else "")
-        tk.Label(shutdown_frame, text="格式: HH:MM (24小时制)", bg="#f0f0f0",
+        tk.Label(timer_frame, text="格式: HH:MM (24小时制)", bg="#f0f0f0",
                  font=("微软雅黑", 8), fg="#666").grid(row=1, column=2, sticky="w")
-
+        # === 新增自动刷新时间设置区域 ===
+        tk.Label(timer_frame, text="         自动刷新时间:", bg="#f0f0f0",
+                 font=("微软雅黑", 9),).grid(row=2, column=0, sticky="e")
+        self.refresh_entry = tk.Entry(timer_frame, width=10)
+        self.refresh_entry.grid(row=2, column=1, padx=5, pady=2)
+        self.refresh_entry.insert(0, self.config.get('auto_refresh_time', "") or "")
+        tk.Label(timer_frame, text="格式: HH:MM (24小时制)", bg="#f0f0f0",
+                 font=("微软雅黑", 8), fg="#666").grid(row=2, column=2, sticky="w")
         # 当前时间显示
         current_time = datetime.now().strftime("%H:%M")
-        tk.Label(shutdown_frame, text=f"当前时间: {current_time}", bg="#f0f0f0",
-                 font=("微软雅黑", 8), fg="#666").grid(row=2, column=1, sticky="w", pady=5)
+        tk.Label(timer_frame, text=f"当前时间: {current_time}", bg="#f0f0f0",
+                 font=("微软雅黑", 8), fg="#666").grid(row=0, column=1, sticky="w", pady=5)
 
         # 确认按钮
         tk.Button(self.rs, text="开始抢购",
@@ -377,10 +389,90 @@ class ParameterSelector:
         self.threshold1_val = None
         self.threshold2_val = None
         self.shutdown_time_val = None  # 新增关机时间变量
+        self.auto_refresh_time_val = None  # 新增关机时间变量
         self.closed_by_user = False
 
         self.rs.mainloop()
+    def create_refresh_control_panel(self):
+        """创建刷新间隔控制面板"""
+        control_frame = tk.Frame(self.rs, bg="#f0f0f0", padx=10, pady=5)
+        control_frame.pack(fill=tk.X)
+        self.seconds = self.refresh_interval_steps * 0.05
 
+        # 标题标签
+        tk.Label(control_frame,
+                 text="  自动刷新间隔:",
+                 font=("微软雅黑",10),
+                 bg="#f0f0f0").pack(side=tk.LEFT, padx=(0, 5))
+
+        # 减号按钮
+        self.minus_btn = tk.Button(
+            control_frame,
+            text="-",
+            command=self.decrease_refresh_interval,
+            font=("微软雅黑", 9, "bold"),
+            width=3,
+            bg="#FF6B6B",
+            fg="white"
+        )
+        self.minus_btn.pack(side=tk.LEFT)
+
+        # 当前值显示
+        self.refresh_label = tk.Label(
+            control_frame,
+            text=f"{self.seconds:.2f} ",
+            font=("微软雅黑", 9),
+            bg="white",
+            relief="sunken",
+            width=12,
+            padx=5
+        )
+        self.refresh_label.pack(side=tk.LEFT, padx=5)
+
+        # 加号按钮
+        self.plus_btn = tk.Button(
+            control_frame,
+            text="+",
+            command=self.increase_refresh_interval,
+            font=("微软雅黑", 9, "bold"),
+            width=3,
+            bg="#4CAF50",
+            fg="white"
+        )
+        self.plus_btn.pack(side=tk.LEFT)
+
+        # 提示标签
+        tk.Label(control_frame,
+                 text="(单位:秒)",
+                 font=("微软雅黑", 8),
+                 fg="#666",
+                 bg="#f0f0f0").pack(side=tk.LEFT, padx=(10, 0))
+
+    def increase_refresh_interval(self):
+        """增加刷新间隔步数"""
+        self.refresh_interval_steps += 1
+        self.update_refresh_display()
+
+    def decrease_refresh_interval(self):
+        """减少刷新间隔步数（最小值1）"""
+        if self.refresh_interval_steps > 1:
+            self.refresh_interval_steps -= 1
+            self.update_refresh_display()
+        else:
+            # 达到最小值时提供视觉反馈
+            self.refresh_label.config(bg="#FFD700")
+            self.rs.after(300, lambda: self.refresh_label.config(bg="white"))
+
+    def update_refresh_display(self):
+        """更新显示值并计算对应秒数"""
+        self.seconds = self.refresh_interval_steps * 0.05
+        self.refresh_label.config(
+            text=f"{self.seconds:.2f}",
+            bg="white"
+        )
+        # 保存配置
+        self.config['refresh_interval_steps'] = self.refresh_interval_steps
+        save_config(self.config)
     def center_window(self):
         """自适应内容并居中显示"""
         # 强制更新布局以计算实际尺寸
@@ -504,7 +596,22 @@ class ParameterSelector:
             else:
                 self.shutdown_time_val = None
                 self.config['shutdown_time'] = None
+            # 处理自动刷新时间设置
+            auto_refresh_time_str = self.refresh_entry.get().strip()
+            if auto_refresh_time_str:
+                try:
 
+                    if not self.validate_time_format(auto_refresh_time_str):
+                        messagebox.showerror("错误", "自动刷新时间格式错误，请使用HH:MM格式（24小时制）")
+                        return
+                    self.auto_refresh_time_val = auto_refresh_time_str
+                    self.config['auto_refresh_time'] = auto_refresh_time_str
+                except ValueError:
+                    messagebox.showerror("错误", "自动刷新时间格式错误，请使用HH:MM格式（24小时制）")
+                    return
+            else:
+                self.auto_refresh_time_val = None
+                self.config['auto_refresh_time'] = None
             # 保存配置
             self.config['threshold1'] = threshold1
             self.config['threshold2'] = threshold2
@@ -533,10 +640,11 @@ class ParameterSelector:
 
 class OverlayApp:
     def __init__(self, root, threshold1, threshold2, max_attempts, monitor_region, click_region, num_region,
-                 shutdown_time=None):
+                 shutdown_time=None, auto_refresh_time=None,refresh_interval_steps=10):
         """初始化主应用，接收配置参数"""
         self.root = root
-        self.root.title("鼠鼠伴生器灵Ver1.4")
+        self.root.title("鼠鼠伴生器灵Ver1.5")
+
 
         # 保存阈值配置
         self.THRESHOLD1 = threshold1
@@ -552,9 +660,15 @@ class OverlayApp:
         }
         self.CLICK_POSITION = click_region
         self.NUM_POSITION = num_region
+
         self.shutdown_time = shutdown_time  # 保存关机时间
         self.shutdown_timer = None  # 关机定时器
         self.shutdown_delay = None  # 关机倒计时（秒）
+
+        self.auto_refresh_time = auto_refresh_time  # 保存自动刷新时间
+        self.auto_refresh_timer = None  # 自动刷新定时器
+        self.auto_refresh_delay = None  # 自动刷新倒计时（秒）
+        self.refresh_interval_steps = refresh_interval_steps
 
         # 显示当前配置信息
         config_frame = tk.Frame(root)
@@ -621,7 +735,12 @@ class OverlayApp:
                                     font=("微软雅黑", 9),
                                     fg="purple")
         self.shutdown_label.pack(side=tk.RIGHT, padx=10)
-
+        # ====== 新增自动刷新倒计时显示 ======
+        self.auto_refresh_label = Label(self.status_frame,
+                                       text="",
+                                       font=("微软雅黑", 9),
+                                       fg="blue")
+        self.auto_refresh_label.pack(side=tk.RIGHT, padx=10)
         # 控制按钮
         self.btn_frame = tk.Frame(root)
         self.btn_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -685,10 +804,83 @@ class OverlayApp:
             'click_region': click_region,
             'shutdown_time': shutdown_time
         }
-
+        # ====== 启动自动刷新定时功能 ======
+        if self.auto_refresh_time:
+            self.toggle_click
+            self.start_auto_refresh_timer()
         # ====== 启动定时关机功能 ======
         if self.shutdown_time:
             self.start_shutdown_timer()
+
+
+    def start_auto_refresh_timer(self):
+        """启动自动刷新定时任务"""
+        try:
+            # 解析自动刷新时间
+            refresh_hour, refresh_minute = map(int, self.auto_refresh_time.split(':'))
+
+            # 获取当前时间
+            now = datetime.now()
+            # 构建目标自动刷新时间（今天）
+            refresh_datetime = now.replace(hour=refresh_hour, minute=refresh_minute,
+                                           second=0, microsecond=0)
+
+            # 如果目标时间已过，设置为明天
+            if refresh_datetime < now:
+                refresh_datetime += timedelta(days=1)
+
+            # 计算时间差（秒）
+            self.auto_refresh_delay = (refresh_datetime - now).total_seconds()
+
+            # 更新状态显示
+            self.auto_refresh_label.config(
+                text=f"自动刷新: {self.auto_refresh_time} (倒计时: {self.format_time(self.auto_refresh_delay)})")
+
+            # 启动定时器
+            self.auto_refresh_timer = threading.Timer(self.auto_refresh_delay, self.initiate_auto_refresh)
+            self.auto_refresh_timer.daemon = True
+            self.auto_refresh_timer.start()
+
+            # 启动倒计时更新
+            self.update_auto_refresh_countdown()
+
+        except Exception as e:
+            print(f"自动刷新设置失败: {str(e)}")
+            self.auto_refresh_label.config(text=f"自动刷新设置失败", fg="red")
+
+    def initiate_auto_refresh(self):
+        """执行自动刷新操作"""
+        # 在主线程中更新UI
+        if self.click_paused:  # 若点击功能被暂停
+            self.toggle_click()  # 启用点击
+        self.toggle_auto_refresh()  # 启动刷新
+        self.root.after(0, lambda: self.auto_refresh_label.config(text="正在启动自动刷新...", fg="white"))
+        self.root.update()
+
+        # 执行自动刷新
+        if not self.auto_refresh_running:
+            self.toggle_auto_refresh()
+
+        # 更新显示
+        self.auto_refresh_label.config(text="自动刷新已启动", fg="white")
+
+    def update_auto_refresh_countdown(self):
+        """更新自动刷新倒计时显示"""
+        if self.auto_refresh_delay is None or self.auto_refresh_delay <= 0:
+            return
+
+        # 减少倒计时
+        self.auto_refresh_delay -= 1
+
+        # 更新显示
+        if self.auto_refresh_delay > 0:
+            self.auto_refresh_label.config(
+                text=f"自动刷新: {self.auto_refresh_time} (倒计时: {self.format_time(self.auto_refresh_delay)})"
+                     f"\n---按下F5以取消定时立刻开始自动刷新---")
+            # 每秒更新一次
+            self.root.after(1000, self.update_auto_refresh_countdown)
+        else:
+            self.auto_refresh_label.config(text="正在启动自动刷新...", fg="white")
 
     def start_shutdown_timer(self):
         """启动定时关机任务"""
@@ -769,7 +961,9 @@ class OverlayApp:
         # 取消关机定时器
         if self.shutdown_timer and self.shutdown_timer.is_alive():
             self.shutdown_timer.cancel()
-
+        # 取消自动刷新定时器
+        if self.auto_refresh_timer and self.auto_refresh_timer.is_alive():
+            self.auto_refresh_timer.cancel()
         # 更新状态
         self.status_label1.config(text="自动采购: 配置中...", fg="blue")
         self.status_label2.config(text="自动刷新: 已暂停", fg="gray")
@@ -829,7 +1023,9 @@ class OverlayApp:
                        selector.monitor_region,
                        selector.click_region,
                        selector.num_region,
-                       selector.shutdown_time_val)  # 传递关机时间
+                       selector.shutdown_time_val,  # 传递关机时间
+                       selector.auto_refresh_time_val,# 传递自动刷新时间
+                       selector.refresh_interval_steps)
             new_root.protocol("WM_DELETE_WINDOW", lambda: self.close_app(new_root))
             new_root.mainloop()
 
@@ -849,7 +1045,9 @@ class OverlayApp:
         # 取消关机定时器
         if self.shutdown_timer and self.shutdown_timer.is_alive():
             self.shutdown_timer.cancel()
-
+        # 取消自动刷新定时器
+        if self.auto_refresh_timer and self.auto_refresh_timer.is_alive():
+            self.auto_refresh_timer.cancel()
         # 销毁窗口
         window.destroy()
         sys.exit()
@@ -873,8 +1071,10 @@ class OverlayApp:
     def toggle_auto_refresh(self, event=None):
         """通过F5键切换自动刷新状态"""
         self.auto_refresh_running = not self.auto_refresh_running
-
+        # 取消自动刷新定时器
+        self.auto_refresh_delay = None
         if self.auto_refresh_running:
+
             # 启动状态
             self.auto_refresh_label.config(text="F5暂停自动刷新", bg="#FF9800")
             # 启动循环点击线程
@@ -893,32 +1093,50 @@ class OverlayApp:
 
     def auto_refresh_action(self):
         """执行循环点击操作"""
+        steps = self.refresh_interval_steps
+
         try:
             while self.auto_refresh_running:
+
                 # 左键点击
+                if not self.auto_refresh_running:
+                    return
+                time.sleep(0.05)
                 self.mouse.press(Button.left)
                 time.sleep(0.05)
                 self.mouse.release(Button.left)
-                time.sleep(0.9)
-                # 按下ESC键
+                time.sleep(0.05)
+                self.mouse.press(Button.left)
+                time.sleep(0.05)
+                self.mouse.release(Button.left)
+                time.sleep(0.05)
+                self.mouse.press(Button.left)
+                time.sleep(0.05)
+                self.mouse.release(Button.left)
+                # 使用短时循环替代长sleep
+                for _ in range(steps):  # 拆分成N次*0.05秒
+                    if not self.auto_refresh_running:
+                        return
+                    time.sleep(0.05)
+                # ESC按键
+                if not self.auto_refresh_running:
+                    return
                 self.keyboard.press(Key.esc)
                 time.sleep(0.05)
                 self.keyboard.release(Key.esc)
-
-                # 控制点击频率（0.5秒/次）
-                for _ in range(10):
+                # 使用短时循环替代长sleep
+                for _ in range(steps):  # 拆分成N次*0.05秒
                     if not self.auto_refresh_running:
                         return
                     time.sleep(0.05)
         except Exception as e:
             print(f"自动刷新异常: {str(e)}")
-            self.status_label2.config(text=f"自动刷新异常: {str(e)}", fg="red")
-
+            self.root.after(0, lambda: self.status_label2.config(
+                text=f"自动刷新异常: {str(e)}", fg="red"))
     def toggle_click(self):
         """切换点击启用状态"""
         with self.lock:
             self.click_paused = not self.click_paused
-
             if self.click_paused:
                 self.toggle_button.config(text="允许购买", bg="#4CAF50")
                 self.status_label1.config(text="自动采购: 已暂停", fg="gray")
@@ -929,21 +1147,22 @@ class OverlayApp:
     def update_overlay(self):
         """持续更新识别区域内容"""
         with mss() as sct:
+            event = threading.Event()
             while self.running:
+                start_time = time.time()
                 try:
                     # 1. 截取指定区域
                     screenshot = sct.grab(self.MONITOR_REGION)
                     img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
-
                     # 2. 在画布上实时显示
                     self.display_on_canvas(img)
-
                     # 3. OCR识别
                     self.process_ocr(np.array(img))
 
-                    time.sleep(0.005)  # 控制刷新频率
+                    process_time = time.time() - start_time
+                    wait_time = max(0.05 - process_time, 0.001)  # 确保不低于1ms
+                    event.wait(timeout=wait_time)
                 except Exception as e:
-                    print(f"更新异常: {str(e)}")
                     break
 
     def display_on_canvas(self, pil_img):
@@ -958,11 +1177,11 @@ class OverlayApp:
         """执行OCR并更新UI"""
         # 图像预处理
         gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-        # _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
         # OCR识别
-        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789'
-        text = pytesseract.image_to_string(gray, config=custom_config).strip()
+        custom_config = r'--oem 1 --psm 8 -c tessedit_char_whitelist=0123456789 load_system_dawg=0 load_freq_dawg=0'
+        text = pytesseract.image_to_string(thresh, config=custom_config).strip()
 
         # 更新UI显示
         display_text = f"识别结果: {text or '无数字'}"
@@ -1105,6 +1324,7 @@ if __name__ == "__main__":
                      selector.monitor_region,
                      selector.click_region,
                      selector.num_region,
-                     selector.shutdown_time_val)  # 传递关机时间
+                     selector.shutdown_time_val,  # 传递关机时间
+                     selector.auto_refresh_time_val)  # 传递自动刷新时间
     root.protocol("WM_DELETE_WINDOW", app.close_app)
     root.mainloop()
