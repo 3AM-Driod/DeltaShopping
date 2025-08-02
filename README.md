@@ -1,5 +1,6 @@
 # DeltaShopping
 DeltaForce Shopping Tool For ShuShu
+Python 3.9.12
 
 开黑交流群：162103846
 
