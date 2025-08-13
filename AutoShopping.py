@@ -47,7 +47,7 @@ def load_config():
         'click_region': None,
         'num_region': None,
         'shutdown_time': None,  # 新增关机时间配置
-        'auto_refresh_time': None,  # 新增关机时间配置
+        'auto_refresh_time': None,  # 新增自动刷新时间配置
         'refresh_interval_steps': 10
     }
 
@@ -242,8 +242,9 @@ class ParameterSelector:
         # 设置样式
         self.rs.configure(bg="#f0f0f0")
         tk.Label(self.rs,
-                 text="三脚粥鼠鼠交流群qq:162103846",
-                 font=("微软雅黑", 12, "bold"),
+                 text="三脚粥鼠鼠交流群qq:162103846"
+                      "\n本软件完全免费，如果你是花钱购买的，请立即退款并举报卖家",
+                 font=("微软雅黑", 8, "bold"),
                  bg="#f0f0f0").pack(pady=10)
         # 创建刷新间隔控制面板
         self.create_refresh_control_panel()
@@ -380,7 +381,7 @@ class ParameterSelector:
                  font=("微软雅黑", 8), fg="#666").grid(row=0, column=1, sticky="w", pady=5)
 
         # 确认按钮
-        tk.Button(self.rs, text="开始抢购",
+        tk.Button(self.rs, text="保存参数",
                   command=self.start_monitoring,
                   font=("微软雅黑", 10), bg="#4CAF50", fg="white",
                   padx=20, pady=5).pack(pady=15)
@@ -643,7 +644,7 @@ class OverlayApp:
                  shutdown_time=None, auto_refresh_time=None,refresh_interval_steps=10):
         """初始化主应用，接收配置参数"""
         self.root = root
-        self.root.title("鼠鼠伴生器灵Ver1.5")
+        self.root.title("鼠鼠伴生器灵Ver1.6")
 
 
         # 保存阈值配置
@@ -806,7 +807,6 @@ class OverlayApp:
         }
         # ====== 启动自动刷新定时功能 ======
         if self.auto_refresh_time:
-            self.toggle_click
             self.start_auto_refresh_timer()
         # ====== 启动定时关机功能 ======
         if self.shutdown_time:
@@ -853,7 +853,6 @@ class OverlayApp:
         # 在主线程中更新UI
         if self.click_paused:  # 若点击功能被暂停
             self.toggle_click()  # 启用点击
-        self.toggle_auto_refresh()  # 启动刷新
         self.root.after(0, lambda: self.auto_refresh_label.config(text="正在启动自动刷新...", fg="white"))
         self.root.update()
 
@@ -1075,6 +1074,8 @@ class OverlayApp:
         self.auto_refresh_delay = None
         if self.auto_refresh_running:
 
+            if self.click_paused:  # 若点击功能被暂停
+                self.toggle_click()  # 启用点击
             # 启动状态
             self.auto_refresh_label.config(text="F5暂停自动刷新", bg="#FF9800")
             # 启动循环点击线程
@@ -1086,6 +1087,7 @@ class OverlayApp:
             # 状态提示
             self.status_label2.config(text="自动刷新: 进行中(按F5停止)", fg="orange")
         else:
+            self.toggle_click()  # 启用点击
             # 停止状态
             self.auto_refresh_label.config(text="F5启动自动刷新", bg="#2196F3")
             # 状态提示
@@ -1097,8 +1099,6 @@ class OverlayApp:
 
         try:
             while self.auto_refresh_running:
-
-                # 左键点击
                 if not self.auto_refresh_running:
                     return
                 time.sleep(0.05)
@@ -1110,9 +1110,6 @@ class OverlayApp:
                 time.sleep(0.05)
                 self.mouse.release(Button.left)
                 time.sleep(0.05)
-                self.mouse.press(Button.left)
-                time.sleep(0.05)
-                self.mouse.release(Button.left)
                 # 使用短时循环替代长sleep
                 for _ in range(steps):  # 拆分成N次*0.05秒
                     if not self.auto_refresh_running:
@@ -1153,18 +1150,32 @@ class OverlayApp:
                 try:
                     # 1. 截取指定区域
                     screenshot = sct.grab(self.MONITOR_REGION)
-                    img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+                    # 转换为numpy数组(BGRA格式)
+                    img_bgra = np.array(screenshot)
+                    if img_bgra.size == 0:
+                        print("警告：空截图，跳过本帧")
+                        continue
+
+                    # 转换为灰度图
+                    gray = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2GRAY)
+
+                    # 自适应二值化参数设置
+                    adaptive_threshold = self.preprocess_image(gray)
+
+                    img = Image.fromarray(adaptive_threshold)  # 自动推断模式
+
                     # 2. 在画布上实时显示
                     self.display_on_canvas(img)
-                    # 3. OCR识别
-                    self.process_ocr(np.array(img))
+
+                    # 3. OCR识别（直接传入二值图）
+                    self.process_ocr(adaptive_threshold)
 
                     process_time = time.time() - start_time
-                    wait_time = max(0.05 - process_time, 0.001)  # 确保不低于1ms
+                    wait_time = max(0.05 - process_time, 0.001)
                     event.wait(timeout=wait_time)
                 except Exception as e:
+                    print(f"更新覆盖层出错: {e}")
                     break
-
     def display_on_canvas(self, pil_img):
         """在Canvas上显示图像"""
         tk_img = ImageTk.PhotoImage(pil_img.resize(
@@ -1173,15 +1184,13 @@ class OverlayApp:
         self.canvas.create_image(0, 0, anchor=tk.NW, image=tk_img)
         self.canvas.image = tk_img  # 防止被垃圾回收
 
-    def process_ocr(self, cv_img):
+    def process_ocr(self, gray):
         """执行OCR并更新UI"""
         # 图像预处理
-        gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
         # OCR识别
         custom_config = r'--oem 1 --psm 8 -c tessedit_char_whitelist=0123456789 load_system_dawg=0 load_freq_dawg=0'
-        text = pytesseract.image_to_string(thresh, config=custom_config).strip()
+        text = pytesseract.image_to_string(gray, config=custom_config).strip()
 
         # 更新UI显示
         display_text = f"识别结果: {text or '无数字'}"
@@ -1198,12 +1207,49 @@ class OverlayApp:
                     # 显示满足条件但因暂停未点击的状态
                     self.status_label1.config(text=f"满足条件但未购买({current_num})", fg="orange")
 
+    def preprocess_image(self,image, apply_morphology=True):
+        """
+        对图像进行自适应二值化预处理，可选择添加形态学操作
+        参数:
+            image: 输入灰度图像
+            apply_morphology: 是否应用形态学操作
+        返回:
+            预处理后的二值图像
+        """
+        # 自适应二值化参数设置
+        block_size = 31  # 邻域大小，必须是奇数
+        c_value = -2  # 从计算阈值中减去的常数
+
+        # 应用自适应二值化（高斯加权）
+        binary = cv2.adaptiveThreshold(
+            image,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            block_size,
+            c_value
+        )
+
+        if apply_morphology:
+            # 创建形态学操作核（3x3矩形）
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+
+            # 先进行开运算（腐蚀+膨胀）去除小噪点
+            opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+
+            # 再进行一次腐蚀使数字变细
+            eroded = cv2.erode(opened, kernel, iterations=1)
+            return eroded
+
+        return binary
     def perform_click(self, current_num):
         """在指定位置执行鼠标点击"""
         try:
             # 更新状态显示
             self.status_label1.config(text=f"自动购买: 尝试以（{current_num}哈夫币）购买", fg="red")
-
+            # 更新点击计数器
+            self.click_count += 1
+            self.click_count_label.config(text=f"点击: {self.click_count}次")
             # 使用pynput执行精确点击
             original_pos = self.mouse.position  # 保存原始位置
 
@@ -1225,15 +1271,15 @@ class OverlayApp:
 
             # 可选：返回原始位置（根据需求决定）
             self.mouse.position = original_pos
-            time.sleep(0.5)  # 确保移动到位
+            time.sleep(1.2)  # 确保移动到位
 
-            # 更新点击计数器
-            self.click_count += 1
-            self.click_count_label.config(text=f"点击: {self.click_count}次")
+
 
             if self.click_count >= self.MAX_ATTEMPTS:
                 # 自动刷新暂停
-                self.root.after(0, self.toggle_auto_refresh)
+                self.auto_refresh_running = False
+                self.auto_refresh_label.config(text="F5启动自动刷新", bg="#2196F3")
+                self.status_label2.config(text="自动刷新:已暂停", fg="gray")
 
                 # 自动暂停自动采购
                 self.click_paused = True
@@ -1302,19 +1348,20 @@ if __name__ == "__main__":
 
     # 创建主窗口并传递配置
     root = tk.Tk()
-    # 获取窗口实际宽高
+    # 获取窗口实际宽高（基于内容）
     width = root.winfo_width()
     height = root.winfo_height()
-    # 获取屏幕宽高
+
+    # 计算居中位置
     screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    x = 3*(screen_width - width) // 4
+    y = (screen_height - height) // 8
 
-    # 计算右上角位置（x: 屏幕右边减去窗口宽度，y: 0）
-    x = screen_width - width
-    y = 0  # 可以根据需要调整，比如设置为50 就是距离顶部50像素
-
+    # 应用新位置（保持原窗口尺寸）
+    root.geometry(f"+{x}+{y}")
     # 设置窗口位置（不改变尺寸）
     root.iconbitmap(resource_path('mouse.ico'))
-    root.geometry(f"+{x}+{y}")
 
     # 传递配置给主应用
     app = OverlayApp(root,
@@ -1325,6 +1372,7 @@ if __name__ == "__main__":
                      selector.click_region,
                      selector.num_region,
                      selector.shutdown_time_val,  # 传递关机时间
-                     selector.auto_refresh_time_val)  # 传递自动刷新时间
+                     selector.auto_refresh_time_val,  # 传递自动刷新时间
+                     selector.refresh_interval_steps)
     root.protocol("WM_DELETE_WINDOW", app.close_app)
     root.mainloop()
